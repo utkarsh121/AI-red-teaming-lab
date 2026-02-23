@@ -184,7 +184,3 @@ If you want to expand this lab:
 * Provide evaluation challenges and grading scripts
 
 Thank you for contributing!
-
----
-
-If you **can provide a file list** from the *utkarsh121/AI-red-teaming-lab* repository or share its contents, I can tailor this README exactly to the files present.
