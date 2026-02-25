@@ -5,15 +5,15 @@
 # =============================================================================
 # Course   : Certified AI Penetration Tester - Red Team (CAIPT-RT)
 # File     : lab_installer_main.sh
-# Target OS: Ubuntu 24.04 LTS (with desktop — local machine)
+# Target OS: Ubuntu 24.04 LTS
+# Author   : Lab Assistant
 #
 # Purpose:
 #   Full automated setup of the AI Red Team Lab environment including:
 #   - Python virtual environment and all required libraries
-#   - Ollama local LLM runtime + TinyLlama model (for Lab 5)
 #   - Lab folder structure on the Desktop
 #   - Dataset downloads from UCI ML Repository
-#   - Notebook downloads from GitHub (Labs 1-5)
+#   - Notebook downloads from GitHub
 #   - Jupyter configuration with hardcoded token and default notebook
 #   - Systemd service for auto-start on boot
 #   - Desktop HTML shortcut for one-click browser access
@@ -24,7 +24,13 @@
 #   bash lab_installer_main.sh
 #
 # DO NOT run with sh. Must be run with bash explicitly.
-# DO NOT run as root.
+#
+# Changes in this version:
+#   - Terminal output re-enabled for all steps using tee
+#   - Token passed directly on ExecStart command line in systemd service
+#     to guarantee it is always applied regardless of config file discovery
+#   - Token also written to both jupyter_lab_configuration.py and
+#     jupyter_server_configuration.py for belt-and-suspenders coverage
 # =============================================================================
 
 set -euo pipefail
@@ -42,7 +48,6 @@ JUPYTER_TOKEN="airedteamlab"
 JUPYTER_PORT="8888"
 JUPYTER_URL="http://localhost:${JUPYTER_PORT}/lab?token=${JUPYTER_TOKEN}"
 GITHUB_RAW="https://raw.githubusercontent.com/utkarsh121/AI-red-teaming-lab/main"
-OLLAMA_MODEL="tinyllama"
 
 NOTEBOOKS=(
     "START_HERE.ipynb"
@@ -50,7 +55,6 @@ NOTEBOOKS=(
     "Lab2_Poisoning_Attack.ipynb"
     "Lab3_Inference_Attack.ipynb"
     "Lab4_Extraction_Attack.ipynb"
-    "Lab5_Prompt_Injection.ipynb"
 )
 
 # =============================================================================
@@ -69,16 +73,6 @@ print_status() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-print_ok() {
-    echo "    OK: $1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: $1" >> "$LOG_FILE"
-}
-
-print_warn() {
-    echo "    WARNING: $1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: $1" >> "$LOG_FILE"
-}
-
 print_error() {
     echo ""
     echo "ERROR: $1"
@@ -95,18 +89,6 @@ log_header() {
     echo "  $1" >> "$LOG_FILE"
     echo "=============================================" >> "$LOG_FILE"
 }
-
-# =============================================================================
-# GUARD: REFUSE TO RUN AS ROOT
-# =============================================================================
-
-if [ "$EUID" -eq 0 ]; then
-    echo ""
-    echo "ERROR: Do not run this script as root."
-    echo "       Run as your regular user account and try again."
-    echo ""
-    exit 1
-fi
 
 # =============================================================================
 # SECTION 1: SYSTEM UPDATE AND UPGRADE
@@ -131,8 +113,6 @@ echo ""
 # START THE LOG FILE
 # =============================================================================
 
-mkdir -p "$LAB_HOME/Desktop"
-
 cat > "$LOG_FILE" << EOF
 =============================================================================
 AI Red Team Lab - Installation Log
@@ -144,7 +124,6 @@ Lab folder  : $LAB_DIR
 Virtual env : $VENV_PATH
 Jupyter URL : $JUPYTER_URL
 GitHub repo : $GITHUB_RAW
-Ollama model: $OLLAMA_MODEL
 =============================================================================
 
 EOF
@@ -174,28 +153,6 @@ sudo apt-get install -y \
 
 print_status "System dependencies installed successfully."
 
-# -----------------------------------------------------------------------------
-# EMOJI FONT
-# -----------------------------------------------------------------------------
-# Ubuntu VMs frequently ship without colour emoji support, causing emoji in
-# notebooks to render as blank boxes. We check first, then refresh the font
-# cache immediately so the change takes effect without a reboot.
-# -----------------------------------------------------------------------------
-
-print_status "Checking emoji font (fonts-noto-color-emoji)..."
-
-if dpkg -l fonts-noto-color-emoji &>/dev/null; then
-    print_status "Emoji font already installed - skipping."
-else
-    print_status "Emoji font not found - installing..."
-    sudo apt-get install -y fonts-noto-color-emoji 2>&1 | tee -a "$LOG_FILE"
-    print_ok "Emoji font installed."
-fi
-
-print_status "Refreshing system font cache (fc-cache)..."
-fc-cache -f -v 2>&1 | tee -a "$LOG_FILE"
-print_ok "Font cache refreshed. Emoji will render correctly in Jupyter."
-
 PYTHON_VERSION=$(python3 --version)
 print_status "Python version: $PYTHON_VERSION"
 
@@ -209,14 +166,14 @@ log_header "STEP 3: Creating Python Virtual Environment"
 if [ ! -d "$VENV_PATH" ]; then
     print_status "Creating virtual environment at: $VENV_PATH"
     python3 -m venv "$VENV_PATH" 2>&1 | tee -a "$LOG_FILE"
-    print_ok "Virtual environment created."
+    print_status "Virtual environment created successfully."
 else
     print_status "Virtual environment already exists at: $VENV_PATH — skipping creation."
 fi
 
 print_status "Activating virtual environment..."
 . "$VENV_PATH/bin/activate"
-print_ok "Virtual environment activated."
+print_status "Virtual environment activated."
 
 # =============================================================================
 # SECTION 4: UPGRADE PIP
@@ -227,13 +184,10 @@ log_header "STEP 4: Upgrading pip"
 
 print_status "Upgrading pip to latest version..."
 pip install --upgrade pip 2>&1 | tee -a "$LOG_FILE"
-print_ok "pip upgraded."
+print_status "pip upgraded successfully."
 
 # =============================================================================
 # SECTION 5: INSTALL PYTHON LIBRARIES
-# =============================================================================
-# requests is added here — required by Lab 5 to call the Ollama REST API.
-# All other libraries are unchanged from previous version.
 # =============================================================================
 
 print_header "STEP 5: Installing Python Libraries"
@@ -250,183 +204,43 @@ pip install \
     jupyterlab \
     matplotlib \
     seaborn \
-    ipywidgets \
-    requests 2>&1 | tee -a "$LOG_FILE"
+    ipywidgets 2>&1 | tee -a "$LOG_FILE"
 
-print_ok "All Python libraries installed."
+print_status "All Python libraries installed successfully."
 
 print_status "Logging installed library versions..."
 python3 -c "
-import sklearn, numpy, pandas, matplotlib, art, requests
+import sklearn, numpy, pandas, matplotlib, art
 versions = {
     'scikit-learn' : sklearn.__version__,
     'numpy'        : numpy.__version__,
     'pandas'       : pandas.__version__,
     'matplotlib'   : matplotlib.__version__,
     'ART'          : art.__version__,
-    'requests'     : requests.__version__,
 }
 for lib, ver in versions.items():
     print(f'  {lib:<20}: {ver}')
 " 2>&1 | tee -a "$LOG_FILE"
 
 # =============================================================================
-# SECTION 6: INSTALL OLLAMA
-# =============================================================================
-# Ollama runs open-source LLMs locally and exposes a simple REST API at
-# http://localhost:11434. Lab 5 (Prompt Injection) sends HTTP requests to
-# this API to interact with TinyLlama.
-#
-# The official Ollama install script:
-#   - Downloads and installs the ollama binary to /usr/local/bin
-#   - Creates an 'ollama' system user
-#   - Registers and starts a systemd service (ollama.service)
-#   - The service auto-starts on every boot
-#
-# We check if Ollama is already installed before running the install script
-# so this section is safe to re-run on a partially configured machine.
+# SECTION 6: CREATE LAB FOLDER STRUCTURE
 # =============================================================================
 
-print_header "STEP 6: Installing Ollama (Local LLM Runtime)"
-log_header "STEP 6: Ollama"
-
-if command -v ollama &>/dev/null; then
-    print_status "Ollama already installed — skipping install."
-    OLLAMA_VERSION=$(ollama --version 2>/dev/null || echo "installed")
-    print_ok "Ollama version: $OLLAMA_VERSION"
-else
-    print_status "Downloading and installing Ollama..."
-    print_status "(This installs the binary and registers the systemd service)"
-
-    # The official install script from ollama.com
-    # It handles architecture detection, binary download, and service setup
-    curl -fsSL https://ollama.com/install.sh | sh 2>&1 | tee -a "$LOG_FILE"
-
-    print_ok "Ollama installed."
-fi
-
-# =============================================================================
-# SECTION 7: VERIFY OLLAMA SERVICE AND PULL TINYLLAMA
-# =============================================================================
-# The Ollama install script starts the service immediately, but we verify
-# it is actually running before attempting to pull the model.
-#
-# Rather than a blind sleep timer, we poll systemctl status in a loop
-# with a timeout — the same way production deployment scripts do it.
-# Only once the service is confirmed running do we pull the model.
-#
-# ollama pull tinyllama:
-#   Downloads TinyLlama-1.1B (~600MB) from the Ollama model registry.
-#   The model is stored on disk permanently — subsequent runs of the
-#   installer will find it already present and skip the download.
-#
-# ollama list:
-#   Lists all models Ollama has downloaded. We use this to verify the
-#   pull succeeded before declaring success.
-# =============================================================================
-
-print_header "STEP 7: Verifying Ollama Service and Pulling TinyLlama"
-log_header "STEP 7: Ollama Service + TinyLlama"
-
-print_status "Waiting for Ollama service to be ready..."
-
-OLLAMA_READY=false
-MAX_WAIT=60       # maximum seconds to wait
-POLL_INTERVAL=3   # check every 3 seconds
-ELAPSED=0
-
-while [ $ELAPSED -lt $MAX_WAIT ]; do
-    if sudo systemctl is-active --quiet ollama; then
-        OLLAMA_READY=true
-        break
-    fi
-    sleep $POLL_INTERVAL
-    ELAPSED=$((ELAPSED + POLL_INTERVAL))
-    print_status "  Ollama not ready yet... waited ${ELAPSED}s / ${MAX_WAIT}s"
-done
-
-if [ "$OLLAMA_READY" = false ]; then
-    # Service did not come up on its own — try starting it explicitly
-    print_warn "Ollama service did not start automatically. Trying manual start..."
-    sudo systemctl start ollama 2>&1 | tee -a "$LOG_FILE" || true
-    sleep 5
-
-    if sudo systemctl is-active --quiet ollama; then
-        OLLAMA_READY=true
-        print_ok "Ollama service started manually."
-    else
-        print_warn "Ollama service is still not running."
-        print_warn "Lab 5 will not work until Ollama is running."
-        print_warn "After install, run:  sudo systemctl start ollama"
-    fi
-fi
-
-if [ "$OLLAMA_READY" = true ]; then
-    print_ok "Ollama service is running."
-
-    # Double-check the API is actually responding, not just the service unit
-    print_status "Verifying Ollama API is responding on port 11434..."
-    API_READY=false
-    for i in 1 2 3 4 5; do
-        if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
-            API_READY=true
-            break
-        fi
-        sleep 3
-    done
-
-    if [ "$API_READY" = true ]; then
-        print_ok "Ollama API is responding."
-    else
-        print_warn "Ollama API not responding yet — continuing anyway."
-    fi
-
-    # Check if TinyLlama is already downloaded
-    if ollama list 2>/dev/null | grep -q "tinyllama"; then
-        print_status "TinyLlama already downloaded — skipping pull."
-        print_ok "TinyLlama ready."
-    else
-        print_status "Pulling TinyLlama model (~600MB, this may take a few minutes)..."
-        ollama pull "$OLLAMA_MODEL" 2>&1 | tee -a "$LOG_FILE"
-
-        # Verify the pull succeeded
-        if ollama list 2>/dev/null | grep -q "tinyllama"; then
-            print_ok "TinyLlama downloaded and verified."
-        else
-            print_warn "TinyLlama pull may have failed."
-            print_warn "After install, run manually:  ollama pull tinyllama"
-        fi
-    fi
-
-    # Log the final model list
-    print_status "Ollama models available:"
-    ollama list 2>&1 | tee -a "$LOG_FILE"
-fi
-
-# Ensure Ollama is enabled to start on every boot
-print_status "Enabling Ollama service to start on boot..."
-sudo systemctl enable ollama 2>&1 | tee -a "$LOG_FILE"
-print_ok "Ollama will start automatically on boot."
-
-# =============================================================================
-# SECTION 8: CREATE LAB FOLDER STRUCTURE
-# =============================================================================
-
-print_header "STEP 8: Creating Lab Folder Structure"
-log_header "STEP 8: Creating Lab Folder Structure"
+print_header "STEP 6: Creating Lab Folder Structure"
+log_header "STEP 6: Creating Lab Folder Structure"
 
 mkdir -p "$LAB_DIR/datasets"
 mkdir -p "$LAB_DIR/notebooks"
 mkdir -p "$LAB_DIR/outputs"
 
-print_ok "Lab folder structure created at: $LAB_DIR"
+print_status "Lab folder structure created at: $LAB_DIR"
 
 # =============================================================================
-# SECTION 9: DOWNLOAD DATASETS
+# SECTION 7: DOWNLOAD DATASETS
 # =============================================================================
 
-print_header "STEP 9: Downloading Datasets"
-log_header "STEP 9: Downloading Datasets"
+print_header "STEP 7: Downloading Datasets"
+log_header "STEP 7: Downloading Datasets"
 
 print_status "Downloading Nursery dataset..."
 curl -fsSL \
@@ -434,9 +248,10 @@ curl -fsSL \
     -o "$LAB_DIR/datasets/nursery.data" 2>&1 | tee -a "$LOG_FILE"
 
 if [ -f "$LAB_DIR/datasets/nursery.data" ]; then
-    print_ok "Nursery dataset: $(wc -l < "$LAB_DIR/datasets/nursery.data") records."
+    NURSERY_SIZE=$(wc -l < "$LAB_DIR/datasets/nursery.data")
+    print_status "Nursery dataset downloaded: $NURSERY_SIZE records."
 else
-    print_error "Nursery dataset download failed. Check internet connection."
+    print_error "Nursery dataset download failed. Check your internet connection."
 fi
 
 print_status "Downloading SMS Spam dataset (zip)..."
@@ -453,20 +268,18 @@ rm -f "$LAB_DIR/datasets/sms_spam.zip"
 rm -f "$LAB_DIR/datasets/readme"
 
 if [ -f "$LAB_DIR/datasets/SMSSpamCollection" ]; then
-    print_ok "SMS Spam dataset: $(wc -l < "$LAB_DIR/datasets/SMSSpamCollection") messages."
+    SMS_SIZE=$(wc -l < "$LAB_DIR/datasets/SMSSpamCollection")
+    print_status "SMS Spam dataset ready: $SMS_SIZE messages."
 else
     print_error "SMS Spam dataset extraction failed."
 fi
 
 # =============================================================================
-# SECTION 10: DOWNLOAD NOTEBOOKS FROM GITHUB
-# =============================================================================
-# Lab5_Prompt_Injection.ipynb is now included in the NOTEBOOKS array.
-# No other changes to this section — the loop handles it automatically.
+# SECTION 8: DOWNLOAD NOTEBOOKS FROM GITHUB
 # =============================================================================
 
-print_header "STEP 10: Downloading Lab Notebooks from GitHub"
-log_header "STEP 10: Downloading Lab Notebooks from GitHub"
+print_header "STEP 8: Downloading Lab Notebooks from GitHub"
+log_header "STEP 8: Downloading Lab Notebooks from GitHub"
 
 print_status "Downloading notebooks from: $GITHUB_RAW"
 
@@ -477,21 +290,25 @@ for NOTEBOOK in "${NOTEBOOKS[@]}"; do
         -o "$LAB_DIR/notebooks/$NOTEBOOK" 2>&1 | tee -a "$LOG_FILE"
 
     if [ -f "$LAB_DIR/notebooks/$NOTEBOOK" ]; then
-        print_ok "  $NOTEBOOK"
+        print_status "  $NOTEBOOK downloaded successfully."
     else
-        print_warn "Failed to download $NOTEBOOK — copy manually from GitHub."
+        echo "  WARNING: Failed to download $NOTEBOOK" | tee -a "$LOG_FILE"
+        echo "  Copy it manually from GitHub to: $LAB_DIR/notebooks/"
     fi
 done
 
+print_status "All notebooks downloaded."
+
 # =============================================================================
-# SECTION 11: CONFIGURE JUPYTER
+# SECTION 9: CONFIGURE JUPYTER
 # =============================================================================
 # Token is written to BOTH config file variants that different Jupyter
-# versions look for. Primary guarantee is the token on ExecStart (Section 12).
+# versions look for. Belt-and-suspenders approach.
+# Primary token guarantee is on the ExecStart command line in Section 10.
 # =============================================================================
 
-print_header "STEP 11: Configuring Jupyter"
-log_header "STEP 11: Configuring Jupyter"
+print_header "STEP 9: Configuring Jupyter"
+log_header "STEP 9: Configuring Jupyter"
 
 mkdir -p "$LAB_HOME/.jupyter"
 
@@ -519,17 +336,20 @@ c.ServerApp.ip = '127.0.0.1'
 c.ServerApp.password = ''
 EOF
 
-print_ok "Jupyter config written. Token: $JUPYTER_TOKEN  Default: START_HERE.ipynb"
+print_status "Config written to jupyter_lab_configuration.py and jupyter_server_configuration.py"
+print_status "Token set to   : $JUPYTER_TOKEN"
+print_status "Default URL set: /lab/tree/START_HERE.ipynb"
 
 # =============================================================================
-# SECTION 12: CREATE SYSTEMD SERVICE FOR AUTO-START ON BOOT
+# SECTION 10: CREATE SYSTEMD SERVICE FOR AUTO-START ON BOOT
 # =============================================================================
-# Token passed DIRECTLY on ExecStart command line — most reliable method.
-# Does not depend on config file discovery or HOME env loading order.
+# KEY FIX: Token passed DIRECTLY on the ExecStart command line.
+# This is the primary and most reliable method — does not depend on
+# config file discovery or environment variable loading at service start.
 # =============================================================================
 
-print_header "STEP 12: Creating Systemd Auto-Start Service"
-log_header "STEP 12: Creating Systemd Auto-Start Service"
+print_header "STEP 10: Creating Systemd Auto-Start Service"
+log_header "STEP 10: Creating Systemd Auto-Start Service"
 
 print_status "Creating systemd service file..."
 
@@ -558,6 +378,8 @@ Environment=PATH=${VENV_PATH}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/
 WantedBy=multi-user.target
 EOF"
 
+print_status "Systemd service file created."
+
 print_status "Reloading systemd daemon..."
 sudo systemctl daemon-reload 2>&1 | tee -a "$LOG_FILE"
 
@@ -570,18 +392,18 @@ sudo systemctl start jupyterlab.service 2>&1 | tee -a "$LOG_FILE"
 sleep 5
 
 if sudo systemctl is-active --quiet jupyterlab.service; then
-    print_ok "JupyterLab service is running."
+    print_status "JupyterLab service is running successfully."
 else
-    print_warn "JupyterLab service may not have started correctly."
-    print_warn "Check with: sudo systemctl status jupyterlab.service"
+    echo "WARNING: JupyterLab service may not have started correctly." | tee -a "$LOG_FILE"
+    echo "         Check with: sudo systemctl status jupyterlab.service" | tee -a "$LOG_FILE"
 fi
 
 # =============================================================================
-# SECTION 13: CREATE DESKTOP HTML SHORTCUT
+# SECTION 11: CREATE DESKTOP HTML SHORTCUT
 # =============================================================================
 
-print_header "STEP 13: Creating Desktop HTML Shortcut"
-log_header "STEP 13: Creating Desktop HTML Shortcut"
+print_header "STEP 11: Creating Desktop HTML Shortcut"
+log_header "STEP 11: Creating Desktop HTML Shortcut"
 
 HTML_SHORTCUT="$LAB_HOME/Desktop/Open_Jupyter_Lab.html"
 
@@ -640,14 +462,16 @@ cat > "$HTML_SHORTCUT" << EOF
 </html>
 EOF
 
-print_ok "Desktop HTML shortcut created at: $HTML_SHORTCUT"
+print_status "Desktop HTML shortcut created at: $HTML_SHORTCUT"
 
 # =============================================================================
-# SECTION 14: CREATE BACKUP start_jupyter.sh ON DESKTOP
+# SECTION 12: CREATE BACKUP start_jupyter.sh ON DESKTOP
+# =============================================================================
+# Token also passed on command line here for the same reliability reason.
 # =============================================================================
 
-print_header "STEP 14: Creating Backup start_jupyter.sh"
-log_header "STEP 14: Creating Backup start_jupyter.sh"
+print_header "STEP 12: Creating Backup start_jupyter.sh"
+log_header "STEP 12: Creating Backup start_jupyter.sh"
 
 BACKUP_LAUNCHER="$LAB_HOME/Desktop/start_jupyter.sh"
 
@@ -656,8 +480,11 @@ cat > "$BACKUP_LAUNCHER" << EOF
 # =============================================================================
 # AI Red Team Lab - Backup Jupyter Launcher
 # =============================================================================
-# Use this if JupyterLab does not start automatically on boot.
-# Usage:  bash start_jupyter.sh
+# Use this if JupyterLab does not start automatically on boot,
+# or if you need to restart it manually.
+#
+# Usage:
+#   bash start_jupyter.sh
 # =============================================================================
 
 echo ""
@@ -671,9 +498,11 @@ echo ""
 echo "JupyterLab is starting..."
 echo ""
 echo "Once started, open your browser and go to:"
+echo ""
 echo "  ${JUPYTER_URL}"
 echo ""
 echo "Or double-click Open_Jupyter_Lab.html on the Desktop."
+echo ""
 echo "Press Ctrl+C in this terminal to stop JupyterLab."
 echo ""
 
@@ -690,38 +519,53 @@ jupyter lab \
 EOF
 
 chmod +x "$BACKUP_LAUNCHER"
-print_ok "Backup launcher created at: $BACKUP_LAUNCHER"
+print_status "Backup launcher created at: $BACKUP_LAUNCHER"
 
 # =============================================================================
-# SECTION 15: FINAL VERIFICATION
+# SECTION 13: FINAL VERIFICATION
 # =============================================================================
 
-print_header "STEP 15: Final Verification"
-log_header "STEP 15: Final Verification"
+print_header "STEP 13: Final Verification"
+log_header "STEP 13: Final Verification"
 
 print_status "Running final checks..."
 echo ""
 
 . "$VENV_PATH/bin/activate"
 
-# Python library check
 python3 -c "
 import sys
 checks = []
 
-for lib, mod in [
-    ('numpy',        'numpy'),
-    ('pandas',       'pandas'),
-    ('scikit-learn', 'sklearn'),
-    ('matplotlib',   'matplotlib'),
-    ('ART',          'art'),
-    ('requests',     'requests'),
-]:
-    try:
-        m = __import__(mod)
-        checks.append((lib, m.__version__, True))
-    except ImportError:
-        checks.append((lib, 'NOT FOUND', False))
+try:
+    import numpy as np
+    checks.append(('numpy', np.__version__, True))
+except ImportError:
+    checks.append(('numpy', 'NOT FOUND', False))
+
+try:
+    import pandas as pd
+    checks.append(('pandas', pd.__version__, True))
+except ImportError:
+    checks.append(('pandas', 'NOT FOUND', False))
+
+try:
+    import sklearn
+    checks.append(('scikit-learn', sklearn.__version__, True))
+except ImportError:
+    checks.append(('scikit-learn', 'NOT FOUND', False))
+
+try:
+    import matplotlib
+    checks.append(('matplotlib', matplotlib.__version__, True))
+except ImportError:
+    checks.append(('matplotlib', 'NOT FOUND', False))
+
+try:
+    import art
+    checks.append(('ART', art.__version__, True))
+except ImportError:
+    checks.append(('ART', 'NOT FOUND', False))
 
 print('Library Check:')
 print('-' * 40)
@@ -741,7 +585,6 @@ else:
 
 echo ""
 
-# Dataset check
 echo "Dataset Check:" | tee -a "$LOG_FILE"
 echo "----------------------------------------" | tee -a "$LOG_FILE"
 for DATASET in "nursery.data" "SMSSpamCollection"; do
@@ -755,7 +598,6 @@ done
 
 echo ""
 
-# Notebook check
 echo "Notebook Check:" | tee -a "$LOG_FILE"
 echo "----------------------------------------" | tee -a "$LOG_FILE"
 for NOTEBOOK in "${NOTEBOOKS[@]}"; do
@@ -768,33 +610,17 @@ done
 
 echo ""
 
-# Service check — JupyterLab and Ollama
 echo "Service Check:" | tee -a "$LOG_FILE"
 echo "----------------------------------------" | tee -a "$LOG_FILE"
-
 if sudo systemctl is-active --quiet jupyterlab.service; then
-    echo "  [OK] JupyterLab service is running" | tee -a "$LOG_FILE"
+    echo "  [OK] JupyterLab systemd service is running" | tee -a "$LOG_FILE"
 else
-    echo "  [STOPPED] JupyterLab — use: bash ~/Desktop/start_jupyter.sh" | tee -a "$LOG_FILE"
-fi
-
-if sudo systemctl is-active --quiet ollama; then
-    echo "  [OK] Ollama service is running on port 11434" | tee -a "$LOG_FILE"
-
-    # Check TinyLlama is present
-    if ollama list 2>/dev/null | grep -q "tinyllama"; then
-        echo "  [OK] TinyLlama model is downloaded and ready" | tee -a "$LOG_FILE"
-    else
-        echo "  [MISSING] TinyLlama model — run: ollama pull tinyllama" | tee -a "$LOG_FILE"
-    fi
-else
-    echo "  [STOPPED] Ollama — run: sudo systemctl start ollama" | tee -a "$LOG_FILE"
-    echo "  [UNKNOWN] TinyLlama — cannot check while Ollama is stopped" | tee -a "$LOG_FILE"
+    echo "  [STOPPED] JupyterLab service is not running" | tee -a "$LOG_FILE"
+    echo "  Use: bash ~/Desktop/start_jupyter.sh" | tee -a "$LOG_FILE"
 fi
 
 echo ""
 
-# Desktop files check
 echo "Desktop Files Check:" | tee -a "$LOG_FILE"
 echo "----------------------------------------" | tee -a "$LOG_FILE"
 for DFILE in "Open_Jupyter_Lab.html" "start_jupyter.sh" "lab_installer_log.txt"; do
@@ -826,12 +652,7 @@ echo "    - Open_Jupyter_Lab.html  (double-click to open lab in browser)"
 echo "    - start_jupyter.sh       (backup if service stops)"
 echo "    - lab_installer_log.txt  (this installation log)"
 echo ""
-echo "  Services running on boot:"
-echo "    - JupyterLab  : http://localhost:${JUPYTER_PORT}"
-echo "    - Ollama      : http://localhost:11434"
-echo ""
 echo "  JupyterLab starts automatically on every boot."
-echo "  Ollama starts automatically on every boot."
 echo "  Students open the browser shortcut and land on START_HERE.ipynb"
 echo ""
 echo "  Good luck with the class!"
